@@ -410,6 +410,20 @@ class MatchRule {
   }
 
   /**
+   * Create a constructor match rule to check if target object is some HTMLElement
+   * and contains tagName.
+   * @param tagName target tag name.
+   */
+  static tagName(tagName: string): MatchRule {
+    return MatchRule.containsProperty("tagName").and(
+      MatchRule.rule(
+        (e) => !!tagName && e.tagName.toUpperCase() == tagName.toUpperCase(),
+        `Tag name equals "${tagName}"`
+      )
+    )
+  }
+
+  /**
    * Create a match rule to check if target object's property value is matching to regexp.
    *
    * If property value is not a string type, then will be used toString to use by regexp.
