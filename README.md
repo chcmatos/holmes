@@ -1,5 +1,7 @@
 # 🕵 Mr. Holmes (`Sherlock Holmes`)
 
+[![image](https://img.shields.io/badge/npm-CB3837?style=for-the-badge&logo=npm&logoColor=white)](#) [![image](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](#) [![image](https://img.shields.io/badge/JavaScript-323330?style=for-the-badge&logo=javascript&logoColor=F7DF1E)](#) [![image](https://img.shields.io/badge/Webpack-8DD6F9?style=for-the-badge&logo=Webpack&logoColor=white)](#)
+
 Execute a fetch using a group of strategies
 and an attempt to solve the `MatchRule` to find one or more elements matching in a node tree,
 for example `HTMLDocument`.
