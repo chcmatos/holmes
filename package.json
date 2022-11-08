@@ -1,0 +1,38 @@
+{
+  "name": "holmes",
+  "version": "1.0.0",
+  "description": "🕵 Mr. Holmes execute a fetch using a group of strategies do find one or more element in element tree nodes that is matching with search condition.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "reset": "npm run drop | npm install",
+    "drop": "npm run clear | rimraf dist | rimraf node_modules | rimraf package-lock.json",
+    "clear": "rimraf dist | npm run clear-js",
+    "clear-dist": "rimraf dist",
+    "clear-js": "rimraf src/**.js src/**/*.js && rimraf src/**/*.js && rimraf src/**/*.js",
+    "dev": "webpack --watch",
+    "build": "webpack --progress --mode=none",
+    "build-dev": "webpack --progress --mode=development"
+  },
+  "keywords": [
+    "sherlock",
+    "holmes",
+    "strategies",
+    "fetch",
+    "match",
+    "find",
+    "looking",
+    "for",
+    "search"
+  ],
+  "author": "Carlos Matos",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/webpack": "^5.28.0",
+    "rimraf": "^3.0.2",
+    "ts-loader": "^8.3.0",
+    "typescript": "^4.7.4",
+    "webpack": "^4.46.0",
+    "webpack-cli": "^3.3.12"
+  }
+}

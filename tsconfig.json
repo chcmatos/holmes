@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "removeComments": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "allowJs": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "es6",
+    "typeRoots": ["./node_modules/@types"],
+    "lib": ["es2020", "dom"]
+  },
+  "exclude": ["node_modules", "./dist/**/*", "./doc"]
+}

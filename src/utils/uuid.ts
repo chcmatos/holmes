@@ -1,0 +1,1034 @@
+import PRNG from "./prng"
+import UInt64 from "./uint64"
+import Hashing, { HashingType } from "./hashing"
+
+//#region Uuid Interfaces
+/**
+ * Uuid interface for access property by key index
+ *
+ * Created by chcmatos <carlos.matos@capgemini.com>, march 21 of 2022.
+ *
+ * @author Carlos Matos
+ */
+export interface UuidKeyAccess {
+  /**
+   * Object key access
+   * @param key index
+   */
+  [key: number]: number
+}
+
+/**
+ *
+ * Uuid iterable
+ *
+ * Created by chcmatos <carlos.matos@capgemini.com>, march 21 of 2022.
+ *
+ * @author Carlos Matos
+ */
+export interface UuidIterable {
+  /**
+   * Iterator access
+   * @returns iterator
+   */
+  [Symbol.iterator](): Iterator<number, number>
+}
+
+/**
+ *
+ * Uuid octets, key access and iterable
+ *
+ * Created by chcmatos <carlos.matos@capgemini.com>, march 21 of 2022.
+ *
+ * @author Carlos Matos
+ * @see UuidKeyAccess
+ * @see UuidIterable
+ */
+export interface UuidOctets extends UuidKeyAccess, UuidIterable {
+  /**
+   * Takes an integer value and returns the item at that index,
+   * allowing for positive and negative integers.
+   * Negative integers count back from the last item in the array.
+   */
+  at(index: number): number
+}
+//#endregion
+
+//#region Uuid Formatter
+export type UuidFormatterType = "std" | "b16" | "b85"
+
+export type UuidNamespace = "nil" | "ns:DNS" | "ns:URL" | "ns:OID" | "ns:X500"
+
+/**
+ * An object to supply UUID format options.
+ */
+abstract class UuidFormatter {
+  /**
+   * Default `Uuid` length
+   */
+  protected static readonly LENGTH: number = 32
+
+  /**
+   * Standard format type separated by "-" char.
+   *
+   * `Ex.: 00000000-0000-0000-0000-000000000000`
+   */
+  public static readonly Standard: UuidFormatterType = "std"
+
+  /**
+   * Base 16 format type, no separation char and uppercase.
+   *
+   * `Ex.: 00000000000000000000000000000000`
+   */
+  public static readonly Base16: UuidFormatterType = "b16"
+
+  /**
+   * Base-85 format type.
+   *
+   * Z85: ZeroMQ's Base-85 encoding/decoding
+   *
+   * see more details here http://rfc.zeromq.org/spec:32
+   */
+  public static readonly Base85: UuidFormatterType = "b85"
+
+  /**
+   * Generate instance of UUID Formatter by type ({@link UuidFormatterType})
+   *
+   * @param type formatter type
+   * @returns instance of `UuidFormatter`
+   */
+  public static getInstance(type: UuidFormatterType): UuidFormatter {
+    switch (type) {
+      case UuidFormatter.Standard:
+        return new UuidFormatterImplStd()
+      case UuidFormatter.Base16:
+        return new UuidFormatterImplB16()
+      case UuidFormatter.Base85:
+        return new UuidFormatterImplB85()
+      default:
+        throw new Error(
+          `UuidFormatter: Format type "${type}" not implemented yet!`
+        )
+    }
+  }
+
+  /**
+   * Attempt to discover `UuidFormatterType` by input argument uuid in literal string
+   * @param uuidStr uuid in literal string
+   */
+  public static discoverType(
+    uuidStr: string | UuidNamespace
+  ): UuidFormatterType {
+    if (!uuidStr || !uuidStr.length) {
+      throw new Error(
+        "UuidFormatter: invalid input argument, uuid string is null!"
+      )
+    }
+
+    const types = [
+      UuidFormatter.Standard,
+      UuidFormatter.Base16,
+      UuidFormatter.Base85,
+    ]
+
+    for (let index in types) {
+      let type: UuidFormatterType = types[index]
+      if (UuidFormatter.getInstance(type).isValid(uuidStr)) {
+        return type
+      }
+    }
+    throw new Error(`UuidFormatter: Uuid string (${uuidStr}) is not valid`)
+  }
+
+  /**
+   * Check if current input `Uuid` is valid
+   * @param uuidStr uuid in literal string
+   * @returns true, so uuid is valid, false otherwise.
+   */
+  public static isValidUuid(uuidStr: string): boolean {
+    if (uuidStr && uuidStr.length) {
+      const types = [
+        UuidFormatter.Standard,
+        UuidFormatter.Base16,
+        UuidFormatter.Base85,
+      ]
+
+      for (let index in types) {
+        let type: UuidFormatterType = types[index]
+        if (UuidFormatter.getInstance(type).isValid(uuidStr)) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  /**
+   * Anonymous and empty instance of `Uuid`. (internal usage only)
+   */
+  protected static emptyUuid(): Uuid {
+    return new (class _Uuid extends Uuid {
+      constructor() {
+        super(0)
+      }
+      protected init(octets: UuidKeyAccess): void {}
+    })()
+  }
+
+  /**
+   * Apply formatation for `Uuid`
+   * @param uuid target uuid
+   * @returns return an Uuid literal string formatted.
+   */
+  public abstract format(uuid: Uuid): string
+
+  /**
+   * Convert `uuid` literal string to `Uuid` object
+   * @param uuid uuid literal string
+   * @returns Uuid object
+   * @throws Throws error when is not possible convert literal string to `Uuid`.
+   */
+  public abstract parse(uuid: string): Uuid
+
+  /**
+   * Check if current uuid literal string was generated by current formatter type
+   * @param uuid uuid literal string
+   * @returns returns true whether input argument is an uuid formatted by this formatter type, otherwise false.
+   */
+  public abstract isValid(uuid: string): boolean
+}
+
+//#region Uuid formatter implementations
+class UuidFormatterImplStd extends UuidFormatter {
+  protected static readonly FORMATTED_LENGTH: number =
+    UuidFormatterImplStd.LENGTH + 4 /*separator char amount*/
+  protected static readonly SEPARATOR_CHAR: string = "-"
+
+  protected static readonly namespaceMap = {
+    nil: "00000000-0000-0000-0000-000000000000",
+    "ns:DNS": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "ns:URL": "6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+    "ns:OID": "6ba7b812-9dad-11d1-80b4-00c04fd430c8",
+    "ns:X500": "6ba7b814-9dad-11d1-80b4-00c04fd430c8",
+  }
+
+  public format(uuid: Uuid): string {
+    let buffer = UuidFormatterImplStd.octetToHexString(uuid, 0, 3)
+    UuidFormatterImplStd.octetToHexString(uuid, 4, 5, false, buffer, 9)
+    UuidFormatterImplStd.octetToHexString(uuid, 6, 7, false, buffer, 14)
+    UuidFormatterImplStd.octetToHexString(uuid, 8, 9, false, buffer, 19)
+    UuidFormatterImplStd.octetToHexString(uuid, 10, 15, false, buffer, 24)
+    buffer[8] =
+      buffer[13] =
+      buffer[18] =
+      buffer[23] =
+        UuidFormatterImplStd.SEPARATOR_CHAR
+    let result = buffer.join("")
+    return result
+  }
+
+  public parse(uuid: string): Uuid {
+    if (UuidFormatterImplStd.namespaceMap[uuid] !== undefined)
+      uuid = UuidFormatterImplStd.namespaceMap[uuid]
+    else if (
+      !uuid.match(
+        /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+      )
+    ) {
+      throw new Error(
+        "UuidFormatter: (Std) Parse invalid string representation " +
+          '(expected "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")'
+      )
+    }
+    let newUuid: Uuid = UuidFormatter.emptyUuid()
+    UuidFormatterImplStd.hexStringToOctets(newUuid, uuid, 0, 8, 0)
+    UuidFormatterImplStd.hexStringToOctets(newUuid, uuid, 9, 13, 4)
+    UuidFormatterImplStd.hexStringToOctets(newUuid, uuid, 14, 18, 6)
+    UuidFormatterImplStd.hexStringToOctets(newUuid, uuid, 19, 23, 8)
+    UuidFormatterImplStd.hexStringToOctets(newUuid, uuid, 24, 36, 10)
+    return newUuid
+  }
+
+  public isValid(uuid: string): boolean {
+    return (
+      UuidFormatterImplStd.namespaceMap[uuid] !== undefined ||
+      (uuid.length == UuidFormatterImplStd.FORMATTED_LENGTH &&
+        uuid
+          .split(UuidFormatterImplStd.SEPARATOR_CHAR)
+          .every((e) => UuidFormatterImplStd.isHex(e)))
+    )
+  }
+
+  //#region format static functions
+  protected static isHex(hex: string) {
+    const radix = 16
+    let aux = parseInt(hex, radix).toString(radix).padStart(hex.length, "0")
+    return (
+      hex.length == aux.length &&
+      aux.localeCompare(hex, undefined, { sensitivity: "accent" }) == 0
+    )
+  }
+
+  protected static numberToHex(n: number, uppercase: boolean): string {
+    let base16 = n.toString(16).padStart(2, "0")
+    return uppercase ? base16.toUpperCase() : base16
+  }
+
+  protected static octetToHexString(
+    octets: Uuid,
+    startPos: number = 0,
+    endPos: number = octets.length,
+    uppercase: boolean = false,
+    bufferStr: Array<string> = new Array(UuidFormatterImplStd.LENGTH),
+    bufferStrOffset: number = 0
+  ): Array<string> {
+    for (let i = startPos; i <= endPos; i++) {
+      bufferStr[bufferStrOffset++] = UuidFormatterImplStd.numberToHex(
+        octets[i],
+        uppercase
+      )
+    }
+    return bufferStr
+  }
+
+  protected static hexStringToOctets(
+    octets: Uuid,
+    bufferStr: string,
+    startPos: number = 0,
+    endPos: number = bufferStr.length,
+    offset: number = 0
+  ): void {
+    for (let i = startPos, digits = 2; i < endPos; i += digits) {
+      octets[offset++] = parseInt(bufferStr.substring(i, i + digits), 16)
+    }
+  }
+  //#endregion
+}
+
+class UuidFormatterImplB16 extends UuidFormatterImplStd {
+  public format(uuid: Uuid): string {
+    let buffer = UuidFormatterImplB16.octetToHexString(
+      uuid,
+      0,
+      Uuid.OCTET - 1,
+      true
+    )
+    let result = buffer.join("")
+    return result
+  }
+
+  public parse(uuid: string): Uuid {
+    let newUuid: Uuid = UuidFormatter.emptyUuid()
+    UuidFormatterImplB16.hexStringToOctets(newUuid, uuid)
+    return newUuid
+  }
+
+  public isValid(uuid: string): boolean {
+    return (
+      uuid.length == UuidFormatterImplB16.LENGTH &&
+      uuid.split("").every((e) => UuidFormatterImplB16.isHex(e))
+    )
+  }
+}
+
+class UuidFormatterImplB85 extends UuidFormatter {
+  //#region base85 encoder/decoder static functions
+  private static readonly BASE85_ENCODER =
+    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#".split(
+      ""
+    )
+
+  private static readonly BASE85_DECODER = [
+    0x00, 0x44, 0x00, 0x54, 0x53, 0x52, 0x48, 0x00, 0x4b, 0x4c, 0x46, 0x41,
+    0x00, 0x3f, 0x3e, 0x45, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x40, 0x00, 0x49, 0x42, 0x4a, 0x47, 0x51, 0x24, 0x25, 0x26,
+    0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32,
+    0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x4d,
+    0x00, 0x4e, 0x43, 0x00, 0x00, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+    0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+    0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x4f, 0x00, 0x50, 0x00, 0x00,
+  ]
+
+  private static readonly BASE85_LENGTH = 20
+
+  private static encode(data: Uuid, size: number = data.length): string {
+    const radix = 4
+
+    if (size % radix !== 0) {
+      throw new Error(
+        `UuidFormatter (B85): Invalid input length (multiple of ${radix} expected)`
+      )
+    }
+
+    const base85 = 85
+    const baseDivisor = Math.pow(base85, radix)
+
+    let strBuffer: string[] = []
+    let i: number = 0
+    let value: number = 0
+
+    while (i < size) {
+      value = value * 256 + data[i++]
+      if (i % 4 === 0) {
+        let divisor: number = baseDivisor
+        while (divisor >= 1) {
+          let index: number = Math.floor(value / divisor) % base85
+          strBuffer.push(this.BASE85_ENCODER[index])
+          divisor /= base85
+        }
+        value = 0
+      }
+    }
+
+    return strBuffer.join("")
+  }
+
+  private static decode(uuidEncoded: string, uuidDest: Uuid): void {
+    const encodedLen = uuidEncoded.length
+    const radix = 5
+    const base85 = 85
+    const radixBytes = 256
+    const baseDivisor = 256 * 256 * 256
+
+    if (encodedLen % radix !== 0)
+      throw new Error(
+        `UuidFormatter (B85): Invalid input length (multiple of ${radix} expected)`
+      )
+
+    let i: number = 0
+    let j: number = 0
+    let value: number = 0
+
+    while (i < encodedLen) {
+      let index: number =
+        uuidEncoded.charCodeAt(i++) - UuidFormatterImplStd.LENGTH
+      if (index < 0 || index >= this.BASE85_DECODER.length) {
+        break
+      }
+
+      value = value * base85 + this.BASE85_DECODER[index]
+      if (i % radix === 0) {
+        var divisor = baseDivisor
+        while (divisor >= 1) {
+          uuidDest[j++] = Math.trunc((value / divisor) % radixBytes)
+          divisor /= radixBytes
+        }
+        value = 0
+      }
+    }
+  }
+  //#endregion
+
+  public format(uuid: Uuid): string {
+    return UuidFormatterImplB85.encode(uuid)
+  }
+
+  public parse(uuid: string): Uuid {
+    let newUuid: Uuid = UuidFormatter.emptyUuid()
+    UuidFormatterImplB85.decode(uuid, newUuid)
+    return newUuid
+  }
+
+  public isValid(uuid: string): boolean {
+    return (
+      !!uuid &&
+      uuid.length == UuidFormatterImplB85.BASE85_LENGTH &&
+      uuid
+        .split("")
+        .every((c) => UuidFormatterImplB85.BASE85_ENCODER.includes(c))
+    )
+  }
+}
+//#endregion
+
+//#endregion
+
+//#region Uuid
+declare const location: any
+
+/**
+ * Uuid version type
+ */
+export type UuidVersion = "nil" | "v1" | "v3" | "v4" | "v5"
+
+/**
+ * Uuid version number type
+ */
+export type UuidVersionNumber = 0 | 1 | 3 | 4 | 5
+
+/**
+ * Uuid XOR-FOLDING number times
+ */
+export type UuidFoldNumberTimes = 1 | 2 | 3 | 4
+
+/**
+ *
+ * An object that represents an `Uuid` from `v1`, `v3`, `v4` or `v5`.
+ *
+ * A universally unique identifier (`UUID`) is a `128-bit` label used for information in computer systems.
+ *
+ * When generated according to the standard methods, UUIDs are, for practical purposes, unique.
+ * Their uniqueness does not depend on a central registration authority or coordination between
+ * the parties generating them, unlike most other numbering schemes.
+ * While the probability that a `UUID` will be duplicated is not zero,
+ * it is close enough to zero to be negligible.
+ *
+ * see more about it here https://en.wikipedia.org/wiki/Universally_unique_identifier
+ *
+ * Created by chcmatos <carlos.matos@capgemini.com>, march 21 of 2022.
+ *
+ * @author Carlos Matos
+ */
+export default abstract class Uuid implements UuidOctets {
+  //#region constants
+  /**
+   * Uuid octets.
+   */
+  public static readonly OCTET: number = 16
+
+  /**
+   * Octet with uuid version number (6)
+   */
+  public static readonly OCTET_VERSION: number = 6
+
+  /**
+   * Uuid v1
+   */
+  public static readonly V1: UuidVersion = "v1"
+
+  /**
+   * Uuid v3
+   */
+  public static readonly V3: UuidVersion = "v3"
+
+  /**
+   * Uuid v4
+   */
+  public static readonly V4: UuidVersion = "v4"
+
+  /**
+   * Uuid v5
+   */
+  public static readonly V5: UuidVersion = "v5"
+
+  /**
+   * Uuid nil
+   */
+  public static readonly NIL: UuidVersion = "nil"
+
+  /**
+   * Uuid formatter for default mode.
+   */
+  public static readonly FORMAT_STD: UuidFormatterType = UuidFormatter.Standard
+
+  /**
+   * Uuid formatter for Base16 mode.
+   */
+  public static readonly FORMAT_B16: UuidFormatterType = UuidFormatter.Base16
+
+  /**
+   * Uuid formatter for base85 mode.
+   */
+  public static readonly FORMAT_B85: UuidFormatterType = UuidFormatter.Base85
+  //#endregion
+
+  //#region static builder methods
+
+  /**
+   * Create a new Uuid instance by version,
+   * by default, latest stable version ({@link Uuid.V4})
+   * @param version uuid version
+   * @returns Uuid instance
+   */
+  public static newUuid(version: UuidVersion = Uuid.V4): Uuid {
+    switch (version) {
+      case Uuid.V1:
+        return Uuid.v1()
+      case Uuid.V3:
+        return Uuid.v3()
+      case Uuid.V4:
+        return Uuid.v4()
+      case Uuid.V5:
+        return Uuid.v5()
+      case Uuid.NIL:
+        return Uuid.nil()
+      default:
+        throw new Error(`Uuid Version "${version}" not implemented yet!`)
+    }
+  }
+
+  /**
+   * Instance of  `UUID` as "nil".
+   *
+   * A special case, is the `UUID` `00000000-0000-0000-0000-000000000000`,
+   * that is, all bits set to zero.
+   * @returns uuid nil
+   */
+  public static nil(): Uuid {
+    return new UuidNil()
+  }
+
+  /**
+   * Generate a {@link Uuid} version 1 (time and node based)
+   *
+   * see more about here https://en.wikipedia.org/wiki/Universally_unique_identifier#Version_1_(date-time_and_MAC_address)
+   *
+   * @returns uuid instance as v1
+   */
+  public static v1(): Uuid {
+    return new UuidV1()
+  }
+
+  /**
+   * Generate a {@link Uuid} version 3 (namespace name-based) uses `MD5` as the `hashing algorithm`.
+   *
+   * see more about here https://en.wikipedia.org/wiki/Universally_unique_identifier#Versions_3_and_5_(namespace_name-based)
+   *
+   * @param namespaceKey namespace key `nil`, `ns:DNS`, `ns:URL`, `ns:OID` or `ns:X500`, by default `ns:URL`
+   * @param addressValue address value, by default make usage of `window.location` for browser or `namespaceKey`
+   * @returns uuid instance as v3
+   */
+  public static v3(namespaceKey?: UuidNamespace, addressValue?: string): Uuid {
+    return new UuidV3(namespaceKey, addressValue)
+  }
+
+  /**
+   * Generate a {@link Uuid} version 4 (random)
+   *
+   * see more about here https://en.wikipedia.org/wiki/Universally_unique_identifier#Version_4_(random)
+   *
+   * @returns uuid instance as v4
+   */
+  public static v4(): Uuid {
+    return new UuidV4()
+  }
+
+  /**
+   * Generate a {@link Uuid} version 5 (namespace name-based) uses `SHA-1` as the `hashing algorithm`.
+   *
+   * see more about here https://en.wikipedia.org/wiki/Universally_unique_identifier#Versions_3_and_5_(namespace_name-based)
+   *
+   * @param namespaceKey namespace key `nil`, `ns:DNS`, `ns:URL`, `ns:OID` or `ns:X500`, by default `ns:URL`
+   * @param addressValue address value, by default make usage of `window.location` for browser or `namespaceKey`
+   * @returns uuid instance as v5
+   */
+  public static v5(namespaceKey?: UuidNamespace, addressValue?: string): Uuid {
+    return new UuidV5(namespaceKey, addressValue)
+  }
+  //#endregion
+
+  //#region constructor and initialization
+  /**
+   * Uuid version
+   */
+  public readonly version: UuidVersionNumber
+
+  /**
+   * Uuid constructor
+   * @param version uuid version
+   */
+  constructor(version: UuidVersionNumber) {
+    this.init(this)
+    this.brandInit(this, (this.version = version))
+  }
+
+  /**
+   * Initialize `Uuid`
+   * @param octets uuid key access mode
+   */
+  protected abstract init(octets: UuidKeyAccess): void
+
+  /**
+   * Brand with particular UUID version and variant 2 (DCE 1.1)
+   * @param octets uuid key access mode
+   * @param version uuid version number
+   */
+  protected brandInit(octets: UuidKeyAccess, version: UuidVersionNumber) {
+    /* brand with particular UUID version  */
+    octets[Uuid.OCTET_VERSION] &= 0x0f
+    octets[Uuid.OCTET_VERSION] |= version << 4
+
+    /* brand as UUID variant 2 (DCE 1.1)  */
+    octets[8] &= 0x3f
+    octets[8] |= 0x02 << 6
+  }
+  //#endregion
+
+  //#region Uuid octets access (key access and iterator)
+
+  /**
+   * Takes an integer value and returns the item at that index,
+   * allowing for positive and negative integers.
+   * Negative integers count back from the last item in the array.
+   */
+  public at(index: number): number {
+    return this[index]
+  }
+
+  /**
+   * Object key access
+   * @param key index
+   */
+  [key: number]: number
+
+  /**
+   * Iterator access
+   * @returns iterator
+   */
+  [Symbol.iterator](): Iterator<number, number> {
+    let step: number = -1
+    const self = this
+    return <Iterator<number, number>>{
+      next() {
+        return <IteratorReturnResult<number>>{
+          value: self[++step],
+          done: step >= Uuid.OCTET,
+        }
+      },
+    }
+  }
+  //#endregion
+
+  //#region array functions
+  /**
+   * `Uuid` length
+   * @returns uuid length
+   */
+  public get length(): number {
+    return Uuid.OCTET
+  }
+
+  /**
+   * Convert `Uuid` to number array.
+   * @returns number array
+   */
+  public toArray(): number[] {
+    let arr: number[] = []
+    for (let i = 0; i < Uuid.OCTET; i++) {
+      arr[i] = this[i] ?? 0
+      return arr
+    }
+  }
+
+  /**
+   * Hash `Uuid` by `XOR-folding` it `k`times.
+   *
+   * see more about it here https://www.codechef.com/problems/XORFOLD
+   *
+   * see more about it here https://www.youtube.com/watch?v=OCwgyungNhc
+   *
+   * @param k fold operations expected, a value betwern 1 and 4
+   * @returns `Uuid` generared by `XOR-folding`
+   */
+  public fold(k: UuidFoldNumberTimes): Uuid {
+    if (typeof k === "undefined") {
+      throw new Error("Invalid argument (number of fold operations expected)")
+    } else if (k < 1 || k > 4) {
+      throw new Error("Invalid argument (1-4 fold operations expected)")
+    } else {
+      const n = Uuid.OCTET / Math.pow(2, k)
+      let uuid = Uuid.nil()
+      for (let i = 0, h = 0; i < n; i++) {
+        for (let j = 0; i + j < Uuid.OCTET; j += n) {
+          h ^= this[i + j]
+        }
+        uuid[i] = h
+        h = 0
+      }
+      return uuid
+    }
+  }
+
+  /**
+   * Copy values from another `Uuid`.
+   * @param other uuid to be copied
+   */
+  protected copy(other: Uuid): void {
+    for (let i in other) {
+      this[i] = other[i]
+    }
+  }
+
+  /**
+   * Clone current `Uuid`
+   * @returns return a copy of current `Uuid`
+   */
+  public clone(): Uuid {
+    let uuid = Uuid.nil()
+    uuid.copy(this)
+    return uuid
+  }
+  //#endregion
+
+  //#region format functions
+  public readonly toString = (): string => this.format()
+
+  /**
+   * Format current `Uuid` to one of choosed {@link UuidFormatterType}.
+   * @param type uuid formatter type,
+   * choose between {@link Uuid.FORMAT_STD}, {@link Uuid.FORMAT_B16} or {@link Uuid.FORMAT_B85}
+   * @returns return uuid formatted
+   */
+  public format(type: UuidFormatterType = Uuid.FORMAT_STD): string {
+    return UuidFormatter.getInstance(type).format(this)
+  }
+
+  /**
+   * Parse and convert `uuid literal string` to `Uuid`.
+   * @param uuidStr uuid string
+   * @param type uuid type, by default will try to discover type by it self.
+   * @returns `Uuid` generated from `uuid string`
+   */
+  public static parse(
+    uuidStr: string | UuidNamespace,
+    type: UuidFormatterType = UuidFormatter.discoverType(uuidStr)
+  ): Uuid {
+    return UuidFormatter.getInstance(type).parse(uuidStr)
+  }
+  //#endregion
+
+  //#region json
+  /**
+   * Convert current uuid to JSON
+   * @returns uuid as literal string for JSON
+   */
+  public toJSON(): string {
+    return this.toString()
+  }
+
+  /**
+   * Find and parse to `Uuid` each json value that is an uuid literal string.
+   *
+   * Use this method in `JSON.parse(json, Uuid.fromJSON)` as a reviver function.
+   *
+   * @param _ json key
+   * @param value json value
+   * @returns returns `Uuid` or input `value`
+   */
+  public static fromJSON(_: string, value: any): any {
+    return (typeof value === "string" ||
+      value?.constructor?.name === "String") &&
+      UuidFormatter.isValidUuid(value)
+      ? Uuid.parse(value)
+      : value
+  }
+  //#endregion
+
+  //#region comparer
+  /**
+   * Compare current `Uuid` with input `other` value.
+   *
+   * The following list shows the values returned:
+   *
+   * `-1`: `Current Uuid` is less than `input Uuid`;
+   *
+   * `+1`: `Current Uuid` is greater than `input Uuid`;
+   *
+   *  `0`: `Current Uuid` equals `input Uuid` or the justification expression is not valid.
+   *
+   * @param other comparable `Uuid`
+   * @returns -1 current uuid is less than compared,
+   * 1 current uuid is greater than compared,
+   * otherwise 0, than both are equals.
+   */
+  public compare(other: Uuid): number {
+    if (!(other instanceof Uuid))
+      throw new Error("Invalid argument, input value isn't an Uuid!")
+    for (let i = 0; i < Uuid.OCTET; i++) {
+      if (this[i] < other[i]) {
+        return -1
+      } else if (this[i] > other[i]) {
+        return 1
+      }
+    }
+    return 0
+  }
+
+  /**
+   * Compare if both (current and input Uuid) are equals.
+   * @param other uuid comparable
+   * @returns true, both are equals, false otherwise.
+   */
+  public equals(other: Uuid): boolean {
+    return this.compare(other) === 0
+  }
+  //#endregion
+}
+
+/**
+ * The "nil" `UUID`, a special case, is the `UUID` `00000000-0000-0000-0000-000000000000`,
+ * that is, all bits set to zero.
+ * @see Uuid
+ */
+class UuidNil extends Uuid {
+  constructor() {
+    super(0)
+  }
+
+  protected init(octets: UuidKeyAccess): void {
+    for (let i = 0; i < Uuid.OCTET; i++) {
+      octets[i] = 0
+    }
+  }
+
+  protected brandInit(octets: UuidKeyAccess, version: number): void {}
+}
+
+/**
+ * Generate a {@link Uuid} version 1 (time and node based)
+ *
+ * see more about here https://en.wikipedia.org/wiki/Universally_unique_identifier#Version_1_(date-time_and_MAC_address)
+ *
+ * @see Uuid
+ */
+class UuidV1 extends Uuid {
+  private static readonly NANO_SEC_FMULT = 1000 * 10
+
+  private static readonly UNIX_EPOCH_TIME = UInt64.parseDigits(
+    0x01,
+    0xb2,
+    0x1d,
+    0xd2,
+    0x13,
+    0x81,
+    0x40,
+    0x00
+  )
+
+  private static timeLast: number = 0
+  private static timeSeq: number = 0
+
+  constructor() {
+    super(1)
+  }
+
+  protected init(octets: UuidKeyAccess): void {
+    //#region determine current time and time sequence counter
+    let date = new Date()
+    let timeNow = date.getTime()
+    UuidV1.timeSeq = timeNow !== UuidV1.timeLast ? 0 : UuidV1.timeSeq + 1
+    UuidV1.timeLast = timeNow
+    //#endregion
+
+    //#region setup time in nanosec and adjusted for Unix Epoch Time
+    let time: UInt64 = UInt64.parse(timeNow)
+    time.mult(UuidV1.NANO_SEC_FMULT)
+    time.add(UuidV1.UNIX_EPOCH_TIME)
+    //#endregion
+
+    //#region To avoid generate same uuid for low resolution system clock add the time/tick
+    //see more about collision here https://en.wikipedia.org/wiki/Universally_unique_identifier#Collisions
+    time.addIf(UuidV1.timeSeq, (t) => t > 0)
+    //#endregion
+
+    //#region Store the 60 LSB of the time in the UUID
+    let ov = time.rotateRight()
+    octets[3] = ov & 0xff
+    ov = time.rotateRight()
+    octets[2] = ov & 0xff
+    ov = time.rotateRight()
+    octets[1] = ov & 0xff
+    ov = time.rotateRight()
+    octets[0] = ov & 0xff
+    ov = time.rotateRight()
+    octets[5] = ov & 0xff
+    ov = time.rotateRight()
+    octets[4] = ov & 0xff
+    ov = time.rotateRight()
+    octets[7] = ov & 0xff
+    ov = time.rotateRight()
+    octets[6] = ov & 0x0f
+    //#endregion
+
+    //#region generate a random clock sequence  */
+    var clock = PRNG.nextBytes(2)
+    octets[8] = clock[0]
+    octets[9] = clock[1]
+    //#endregion
+
+    //#region generate a random local multicast node address
+    var node = PRNG.nextBytes(6)
+    node[0] |= 0x01
+    node[0] |= 0x02
+    node.forEach((n, i) => (octets[10 + i] = n))
+    //#endregion
+  }
+}
+
+/**
+ * Generate a {@link Uuid} version 3 (namespace name-based) uses `MD5` as the `hashing algorithm`.
+ *
+ * see more about here https://en.wikipedia.org/wiki/Universally_unique_identifier#Versions_3_and_5_(namespace_name-based)
+ *
+ * @see Uuid
+ */
+class UuidV3 extends Uuid {
+  protected readonly namespaceKey: string
+  protected readonly addressValue: string
+
+  constructor(
+    namespaceKey?: UuidNamespace,
+    addressValue?: string,
+    version: UuidVersionNumber = 3,
+    algorithm: HashingType = Hashing.MD5
+  ) {
+    super(version)
+    this.namespaceKey = namespaceKey ?? "ns:URL"
+    this.addressValue =
+      addressValue ??
+      (typeof location !== "undefined"
+        ? location.protocol + "//" + location.host
+        : this.namespaceKey)
+    this.initHashing(this, algorithm)
+  }
+
+  protected init(_: UuidKeyAccess): void {}
+
+  protected initHashing(octets: UuidKeyAccess, algorithm: HashingType) {
+    let input: string[] = []
+    let nsUuid = UuidV3.parse(this.namespaceKey)
+    for (let i = 0; i < Uuid.OCTET; i++) {
+      input.push(String.fromCharCode(nsUuid[i]))
+    }
+    input.push(this.addressValue)
+
+    const hash = Hashing.get(algorithm).hash(input.join(""))
+    for (let i = 0; i < Uuid.OCTET; i++) {
+      octets[i] = hash.charCodeAt(i)
+    }
+  }
+}
+
+/**
+ * Generate a {@link Uuid} version 4 (random)
+ *
+ * see more about here https://en.wikipedia.org/wiki/Universally_unique_identifier#Version_4_(random)
+ *
+ * @see Uuid
+ */
+class UuidV4 extends Uuid {
+  constructor() {
+    super(4)
+  }
+
+  protected init(octets: UuidKeyAccess): void {
+    let data = PRNG.nextBytes(Uuid.OCTET)
+    for (let i = 0, l = data.length; i < l; i++) {
+      octets[i] = data[i]
+    }
+  }
+}
+
+/**
+ * Generate a {@link Uuid} version 5 (namespace name-based) uses `SHA-1` as the `hashing algorithm`.
+ *
+ * see more about here https://en.wikipedia.org/wiki/Universally_unique_identifier#Versions_3_and_5_(namespace_name-based)
+ *
+ * @see Uuid
+ */
+class UuidV5 extends UuidV3 {
+  constructor(namespaceKey?: UuidNamespace, addressValue?: string) {
+    super(namespaceKey, addressValue, 5, Hashing.SHA1)
+  }
+}
+//#endregion

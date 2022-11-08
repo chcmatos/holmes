@@ -1,0 +1,9 @@
+./node_modules
+./dist
+
+package-lock.json
+dist
+node_modules
+src/test.ts
+src/**/**.js
+.DS_Store
